@@ -26,8 +26,10 @@ Instead of paying a cloud API to read your chat logs, this daemon uses your loca
 ### 1. Install Ollama
 Ollama runs the AI models physically on your local machine. Open an Administrator PowerShell window and install it via the Windows Package Manager:
 ```powershell
+
 winget install Ollama.Ollama
 
+```
 
 ption A: The Visual Way (Click-by-Click)
 If you prefer to use standard Windows menus, here is exactly where this setting is hidden:
@@ -55,20 +57,22 @@ Since you are already comfortable copying and pasting commands into PowerShell, 
 
 Open a standard PowerShell window and paste this exact command, then hit Enter:
 
-PowerShell
+```PowerShell
 [Environment]::SetEnvironmentVariable("OLLAMA_NO_CLOUD", "1", "User")
+```
 That is it. The command silently creates the exact same variable. Just restart your PowerShell windows and Ollama, and your local AI is permanently air-gapped from the internet.
 
 🚀 Setup & Deployment
 1. Project Structure
 Navigate to your current project root directory. Your structure should look like this:
 
+```
 Plaintext
 your_project/
 ├── export_queue/             # The daemon will create this automatically
 ├── project_context.md        # Your master context/RAG file
 └── auto_compact_daemon.ps1   # The background script
-
+```
 
 2. Create the Daemon Script
 Create a file named auto_compact_daemon.ps1 in your project root and paste the following PowerShell code:
@@ -76,6 +80,7 @@ Create a file named auto_compact_daemon.ps1 in your project root and paste the f
 PowerShell
 # auto_compact_daemon.ps1 - $0.00 Automated Background RAG Poller (Windows)
 
+```
 $WATCH_DIR = "export_queue"
 $GRAPH_FILE = "project_context.md" # Change this to your master context file
 $MODEL = "qwen2.5-coder:7b"
@@ -140,28 +145,30 @@ while ($true) {
     # 6. Rest loop to prevent CPU thrashing
     Start-Sleep -Seconds $POLL_INTERVAL
 }
-
+```
 
 3. Start the Daemon
 Open a dedicated PowerShell window that you can leave running in the background. If you haven't enabled script execution on your machine yet, run Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser first.
 
 Then start the poller:
 
-PowerShell
+```PowerShell
 .\auto_compact_daemon.ps1
-
+```
 
 The Daily Workflow
 You stay entirely inside your primary AI terminal (like Claude Code). When your hot memory gets too large and queries start getting expensive, execute this two-step process:
 
 1. Dump your memory to the queue:
 
-Plaintext
+```Plaintext
 /export export_queue\1.md
+```
 (The background daemon will instantly detect the file, fire up your local GPU to summarize it, inject it into your project_context.md file, and delete the export file).
 
 2. Wipe the expensive hot memory:
 
-Plaintext
+```Plaintext
 /clear
+```
 On your next prompt, simply ask the agent to re-read your project_context.md file. It will instantly absorb the newly appended summary as absolute truth, and your API context window starts fresh at practically $0.00.
