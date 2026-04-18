@@ -171,3 +171,9 @@ You stay entirely inside your primary AI terminal (like Claude Code). When your 
 /clear
 ```
 On your next prompt, simply ask the agent to re-read your project_context.md file. It will instantly absorb the newly appended summary as absolute truth, and your API context window starts fresh at practically $0.00.
+
+
+## ⚖️ Disclaimer & Liability
+This is an experimental, open-source script designed to optimize API costs. Because this daemon operates a queue that automatically **deletes** files once they are processed, you must ensure you are only exporting disposable chat logs into the watched directory. 
+
+By using this tool, you acknowledge that you are using it "AS-IS" and entirely at your own risk. The author assumes absolutely no liability for any lost data, deleted files, corrupted markdown maps, or broken pipelines. **Always keep backups of your master context files.**
