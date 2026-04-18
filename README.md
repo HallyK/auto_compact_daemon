@@ -77,10 +77,9 @@ your_project/
 2. Create the Daemon Script
 Create a file named auto_compact_daemon.ps1 in your project root and paste the following PowerShell code:
 
-PowerShell
+```PowerShell
 # auto_compact_daemon.ps1 - $0.00 Automated Background RAG Poller (Windows)
 
-```
 $WATCH_DIR = "export_queue"
 $GRAPH_FILE = "project_context.md" # Change this to your master context file
 $MODEL = "qwen2.5-coder:7b"
