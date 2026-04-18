@@ -31,7 +31,7 @@ winget install Ollama.Ollama
 
 ```
 
-ption A: The Visual Way (Click-by-Click)
+Option A: The Visual Way (Click-by-Click)
 If you prefer to use standard Windows menus, here is exactly where this setting is hidden:
 
 Open the Start Menu: Press the Windows key on your keyboard.
