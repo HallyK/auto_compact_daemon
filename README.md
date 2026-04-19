@@ -102,7 +102,7 @@ if (-not (Test-Path -Path $GRAPH_FILE)) {
 Write-Host "==========================================================" -ForegroundColor Cyan
 Write-Host "  Auto-Compaction Daemon Active (Windows)" -ForegroundColor Cyan
 Write-Host "  Watching directory : .\$WATCH_DIR\" -ForegroundColor Cyan
-Write-Host "  Using Local Model  : $MODEL" -ForegroundColor Cyan
+Write-Host "  Using Local Model  : $MODEL (Map-Reduce Chunking Enabled)" -ForegroundColor Cyan
 Write-Host "  Polling Interval   : $POLL_INTERVAL seconds" -ForegroundColor Cyan
 Write-Host "==========================================================" -ForegroundColor Cyan
 Write-Host "Usage in Claude Code: /export $WATCH_DIR\chat1.md`n" -ForegroundColor Yellow
@@ -117,7 +117,7 @@ while ($true) {
         
         Write-Host "[$TIMESTAMP]  Picked up: $($TARGET_FILE.Name) from the top of the pile." -ForegroundColor Yellow
         
-      $RAW_CHAT = Get-Content -Path $FULL_PATH -Raw
+        $RAW_CHAT = Get-Content -Path $FULL_PATH -Raw
         
         #  1. THE "TIME MACHINE" (Fixes the overlapping/duplicated words)
         $evaluator = [System.Text.RegularExpressions.MatchEvaluator] {
@@ -136,43 +136,73 @@ while ($true) {
         # It ONLY allows standard keyboard letters, numbers, spaces, and newlines.
         $RAW_CHAT = $RAW_CHAT -replace '[^\x09\x0A\x0D\x20-\x7E]', ''
 
-        $PROMPT = "You are a data extraction pipeline. Condense the following chat transcript into core modular facts: architectural decisions, new variables, methodology updates, and script modifications. STRICT RULES: Output strictly in plain text. Do not use emojis. Do not include conversational filler, introductions, or conclusions. Provide only the condensed, raw technical data. Chat transcript: $RAW_CHAT"
+        Write-Host "[$TIMESTAMP]  Chunking text and condensing (Map-Reduce)..." -ForegroundColor DarkGray
 
-        Write-Host "[$TIMESTAMP]  Condensing with local Ollama API..." -ForegroundColor DarkGray
+        # 3. Split the text into an array of lines to avoid cutting words in half
+        $lines = $RAW_CHAT -split "`n"
+        
+        # Prevent math errors on extremely short files
+        if ($lines.Count -lt 3) {
+            $chunkSize = $lines.Count
+            $chunks = @( ($lines -join "`n") )
+        } else {
+            $chunkSize = [math]::Ceiling($lines.Count / 3)
+            $chunks = @(
+                ($lines[0..($chunkSize-1)] -join "`n"),
+                ($lines[$chunkSize..($chunkSize*2-1)] -join "`n"),
+                ($lines[($chunkSize*2)..($lines.Count-1)] -join "`n")
+            )
+        }
 
-        # 3. Compress the JSON and force UTF-8 charset
-        $BODY = @{
-            model = $MODEL
-            prompt = $PROMPT
-            stream = $false
-        } | ConvertTo-Json -Depth 10 -Compress
+        $FINAL_SUMMARY = ""
+        $chunkIndex = 1
 
-        $RESPONSE = Invoke-RestMethod -Uri "http://localhost:11434/api/generate" -Method Post -Body $BODY -ContentType "application/json; charset=utf-8"
+        # 4. Loop through each chunk and call Ollama
+        foreach ($chunk in $chunks) {
+            if ([string]::IsNullOrWhiteSpace($chunk)) { continue }
 
-        $SUMMARY = $RESPONSE.response.Trim()
+            Write-Host "  -> Processing Chunk $chunkIndex/3..." -ForegroundColor DarkCyan
 
-        # THE AGGRESSIVE OUTPUT SCRUBBER (Belt and suspenders, just in case)
-        $SUMMARY = $SUMMARY -replace "`e\[[0-9;]*[a-zA-Z]", ""
-        $SUMMARY = $SUMMARY -replace "\x1b\[[0-9;]*[a-zA-Z]", ""
-        $SUMMARY = $SUMMARY -replace "\[[0-9;]*[a-zA-Z]", ""
+            # The ultra-strict anti-truncation prompt, applied to just this chunk
+            $PROMPT = "You are a rigid enterprise data extraction pipeline. Extract all core modular facts from the following text block into distinct categories: Architectural Decisions, Variables, Methodology Updates, and Script Modifications. STRICT RULES: 1. Output strictly in plain text. 2. NO emojis, NO conversational filler, NO introductions, and NO conclusions. 3. EXHAUSTIVE EXTRACTION: Do NOT truncate lists or over-compress. You MUST capture the technical essence of EVERY single item. 4. Retain all specific kernel terminology, parameters, and bash commands verbatim. Provide only the raw, condensed technical data. Text chunk: $chunk"
+
+            $BODY = @{
+                model = $MODEL
+                prompt = $PROMPT
+                stream = $false
+            } | ConvertTo-Json -Depth 10 -Compress
+
+            $RESPONSE = Invoke-RestMethod -Uri "http://localhost:11434/api/generate" -Method Post -Body $BODY -ContentType "application/json; charset=utf-8"
+
+            $SUMMARY = $RESPONSE.response.Trim()
+
+            # THE AGGRESSIVE OUTPUT SCRUBBER (Belt and suspenders)
+            $SUMMARY = $SUMMARY -replace "`e\[[0-9;]*[a-zA-Z]", ""
+            $SUMMARY = $SUMMARY -replace "\x1b\[[0-9;]*[a-zA-Z]", ""
+            $SUMMARY = $SUMMARY -replace "\[[0-9;]*[a-zA-Z]", ""
+
+            # Append this chunk's extraction to the final master block
+            $FINAL_SUMMARY += "`n$SUMMARY`n"
+            $chunkIndex++
+        }
 
         Write-Host "[$TIMESTAMP]  Injecting into Graphify map..." -ForegroundColor Green
         
         $INJECT_TIME = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
         $HEADER = "`n`n## [LOCAL COMPACTION UPDATE - $INJECT_TIME]`n"
         
-        # 4. Append to the Graphify map
+        # 5. Append to the Graphify map
         Add-Content -Path $GRAPH_FILE -Value $HEADER
-        Add-Content -Path $GRAPH_FILE -Value $SUMMARY
+        Add-Content -Path $GRAPH_FILE -Value $FINAL_SUMMARY
 
-        # 5. Delete the file to advance the queue
+        # 6. Delete the file to advance the queue
         Remove-Item -Path $FULL_PATH -Force
         
         Write-Host "[$TIMESTAMP]  Deleted $($TARGET_FILE.Name). Waiting for next export..." -ForegroundColor Red
         Write-Host "----------------------------------------------------------"
     }
 
-    # 6. Rest loop to prevent CPU thrashing
+    # 7. Rest loop to prevent CPU thrashing
     Start-Sleep -Seconds $POLL_INTERVAL
 }
 ```
