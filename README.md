@@ -6,16 +6,16 @@
 When using graphify using compact costs large amounts of tokens based on the length of the conversation. This is a backdoor fix to the compact issue, instead of using claude to write the compact to graphiffy, this daemon uses Ollama on your local GPU to summarize the exact same text, but for free. Offloading the text in a .md file.
 
 
-# 🧠 Zero-Cost Local Memory Daemon
+#  Zero-Cost Local Memory Daemon
 
 A lightweight, $0.00 background RAG (Retrieval-Augmented Generation) poller for agentic CLI tools like Claude Code. 
 
 This daemon watches an export queue, uses a local offline LLM (via Ollama) to summarize your chat history, and seamlessly injects the compressed context back into your project's knowledge map—completely bypassing expensive API compaction taxes.
 
-## ⚠️ The Problem
+##  The Problem
 When using CLI-based AI agents (like Claude Code), your hot memory bloats quickly. Commands like `/compact` send your massive chat history to an expensive frontier API just to write a short summary. This "token tax" adds up rapidly.
 
-## 💡 The Solution
+##  The Solution
 Instead of paying a cloud API to read your chat logs, this daemon uses your local GPU/CPU to do the heavy lifting for free. 
 1. You dump your chat memory to a local folder.
 2. The background PowerShell daemon detects the file.
@@ -25,7 +25,7 @@ Instead of paying a cloud API to read your chat logs, this daemon uses your loca
 
 ---
 
-## 🛠️ Prerequisites & Installation (Windows)
+##  Prerequisites & Installation (Windows)
 
 ### 1. Install Ollama
 Ollama runs the AI models physically on your local machine. Open an Administrator PowerShell window and install it via the Windows Package Manager:
@@ -100,10 +100,10 @@ if (-not (Test-Path -Path $GRAPH_FILE)) {
 }
 
 Write-Host "==========================================================" -ForegroundColor Cyan
-Write-Host " 🤖 Auto-Compaction Daemon Active (Windows)" -ForegroundColor Cyan
-Write-Host " 📁 Watching directory : .\$WATCH_DIR\" -ForegroundColor Cyan
-Write-Host " 🧠 Using Local Model  : $MODEL" -ForegroundColor Cyan
-Write-Host " ⏱️  Polling Interval   : $POLL_INTERVAL seconds" -ForegroundColor Cyan
+Write-Host "  Auto-Compaction Daemon Active (Windows)" -ForegroundColor Cyan
+Write-Host "  Watching directory : .\$WATCH_DIR\" -ForegroundColor Cyan
+Write-Host "  Using Local Model  : $MODEL" -ForegroundColor Cyan
+Write-Host "   Polling Interval   : $POLL_INTERVAL seconds" -ForegroundColor Cyan
 Write-Host "==========================================================" -ForegroundColor Cyan
 Write-Host "Usage in Claude Code: /export export_queue\chat1.md`n" -ForegroundColor Yellow
 
@@ -115,21 +115,32 @@ while ($true) {
         $FULL_PATH = $TARGET_FILE.FullName
         $TIMESTAMP = Get-Date -Format "HH:mm:ss"
         
-        Write-Host "[$TIMESTAMP] 📥 Picked up: $($TARGET_FILE.Name) from the queue." -ForegroundColor Yellow
+        Write-Host "[$TIMESTAMP]  Picked up: $($TARGET_FILE.Name) from the queue." -ForegroundColor Yellow
         
         $RAW_CHAT = Get-Content -Path $FULL_PATH -Raw
         
         # Adjust this prompt to fit your specific workflow
         $PROMPT = "You are a strict technical summarizer. Extract the core architectural decisions, variables, script modifications, and methodology from this chat transcript. Write a dense, highly technical markdown summary. Do NOT output conversational filler. Output ONLY the raw markdown summary. Here is the chat: $RAW_CHAT"
 
-        Write-Host "[$TIMESTAMP] ⚙️ Condensing with local Ollama model..." -ForegroundColor DarkGray
+        Write-Host "[$TIMESTAMP]  Condensing with local Ollama API..." -ForegroundColor DarkGray
+
+        $BODY = @{
+            model = $MODEL
+            prompt = $PROMPT
+            stream = $false
+        } | ConvertTo-Json
+        
+        $RESPONSE = Invoke-RestMethod -Uri "http://localhost:11434/api/generate" -Method Post -Body $BODY -ContentType "application/json"
+        $SUMMARY = $RESPONSE.response.Trim()
+        
+        Write-Host "[$TIMESTAMP]  Injecting into Graphify map..." -ForegroundColor Green
         
         # 3. Call Ollama via PIPELINE to bypass Windows command-line length limits
         $SUMMARY = $PROMPT | ollama run $MODEL $PROMPT
 
         $SUMMARY = $SUMMARY -replace "`e\[[0-9;]*[a-zA-Z]", ""
 
-        Write-Host "[$TIMESTAMP] 💉 Injecting into context map..." -ForegroundColor Green
+        Write-Host "[$TIMESTAMP]  Injecting into context map..." -ForegroundColor Green
         
         $INJECT_TIME = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
         $HEADER = "## [LOCAL COMPACTION UPDATE - $INJECT_TIME]"
@@ -143,7 +154,7 @@ while ($true) {
         # 5. Delete the file to advance the queue
         Remove-Item -Path $FULL_PATH -Force
         
-        Write-Host "[$TIMESTAMP] 🗑️ Deleted $($TARGET_FILE.Name). Waiting for next export..." -ForegroundColor Red
+        Write-Host "[$TIMESTAMP]  Deleted $($TARGET_FILE.Name). Waiting for next export..." -ForegroundColor Red
         Write-Host "----------------------------------------------------------"
     }
 
@@ -179,7 +190,7 @@ You stay entirely inside your primary AI terminal (like Claude Code). When your 
 On your next prompt, simply ask the agent to re-read your project_context.md file. It will instantly absorb the newly appended summary as absolute truth, and your API context window starts fresh at practically $0.00.
 
 
-## ⚖️ Disclaimer & Liability
+##  Disclaimer & Liability
 This is an experimental, open-source script designed to optimize API costs. Because this daemon operates a queue that automatically **deletes** files once they are processed, you must ensure you are only exporting disposable chat logs into the watched directory. 
 
 By using this tool, you acknowledge that you are using it "AS-IS" and entirely at your own risk. The author assumes absolutely no liability for any lost data, deleted files, corrupted markdown maps, or broken pipelines. **Always keep backups of your master context files.**
