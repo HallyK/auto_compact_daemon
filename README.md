@@ -89,63 +89,33 @@ $GRAPH_FILE = "graphify-out\GRAPH_REPORT.md"
 $MODEL = "qwen2.5-coder:7b"
 $POLL_INTERVAL = 5
 
-# 1. Setup the queue directory
-if (-not (Test-Path -Path $WATCH_DIR)) {
-    New-Item -ItemType Directory -Path $WATCH_DIR | Out-Null
-}
-
-if (-not (Test-Path -Path $GRAPH_FILE)) {
-    Write-Host "Error: $GRAPH_FILE not found. Please run this from your CMP-400 root directory." -ForegroundColor Red
-    exit
-}
+if (-not (Test-Path -Path $WATCH_DIR)) { New-Item -ItemType Directory -Path $WATCH_DIR | Out-Null }
 
 Write-Host "==========================================================" -ForegroundColor Cyan
-Write-Host "  Auto-Compaction Daemon Active (Windows)" -ForegroundColor Cyan
+Write-Host "  Auto-Compaction Daemon Active (Two-Stage Map-Reduce)" -ForegroundColor Cyan
 Write-Host "  Watching directory : .\$WATCH_DIR\" -ForegroundColor Cyan
-Write-Host "  Using Local Model  : $MODEL (Map-Reduce Chunking Enabled)" -ForegroundColor Cyan
-Write-Host "  Polling Interval   : $POLL_INTERVAL seconds" -ForegroundColor Cyan
+Write-Host "  Using Local Model  : $MODEL" -ForegroundColor Cyan
 Write-Host "==========================================================" -ForegroundColor Cyan
-Write-Host "Usage in Claude Code: /export $WATCH_DIR\chat1.md`n" -ForegroundColor Yellow
 
 while ($true) {
-    # 2. Find the oldest file in the queue (FIFO - First In, First Out)
     $TARGET_FILE = Get-ChildItem -Path $WATCH_DIR -File | Sort-Object CreationTime | Select-Object -First 1
 
     if ($TARGET_FILE) {
         $FULL_PATH = $TARGET_FILE.FullName
         $TIMESTAMP = Get-Date -Format "HH:mm:ss"
+        Write-Host "[$TIMESTAMP]  Picked up: $($TARGET_FILE.Name)" -ForegroundColor Yellow
         
-        Write-Host "[$TIMESTAMP]  Picked up: $($TARGET_FILE.Name) from the top of the pile." -ForegroundColor Yellow
+        $RAW_CHAT = Get-Content -Path $FULL_PATH -Raw -Encoding UTF8
         
-        $RAW_CHAT = Get-Content -Path $FULL_PATH -Raw
-        
-        #  1. THE "TIME MACHINE" (Fixes the overlapping/duplicated words)
-        $evaluator = [System.Text.RegularExpressions.MatchEvaluator] {
-            param($m)
-            $text = $m.Groups[1].Value
-            $del = [int]$m.Groups[2].Value
-            if ($text.Length -ge $del) { 
-                return $text.Substring(0, $text.Length - $del) 
-            }
-            return ""
-        }
+        # 1. Clean terminal artifacts (Preserves Math/Greek symbols)
+        $evaluator = [System.Text.RegularExpressions.MatchEvaluator] { param($m); $text=$m.Groups[1].Value; $del=[int]$m.Groups[2].Value; if($text.Length -ge $del){return $text.Substring(0,$text.Length-$del)}; return "" }
         $RAW_CHAT = [System.Text.RegularExpressions.Regex]::Replace($RAW_CHAT, "(?s)(.*?)\x1b\[(\d+)D\x1b\[K\r?\n?", $evaluator)
+        $RAW_CHAT = $RAW_CHAT -replace "\x1B\[[0-9;]*[a-zA-Z]", ""
 
-        # 2. THE ASCII ENFORCER (Prevents JSON crashes)
-        # This instantly deletes all emojis, weird terminal bytes, and the  characters.
-        # It ONLY allows standard keyboard letters, numbers, spaces, and newlines.
-        $RAW_CHAT = $RAW_CHAT -replace '[^\x09\x0A\x0D\x20-\x7E]', ''
-
-        Write-Host "[$TIMESTAMP]  Chunking text and condensing (Map-Reduce)..." -ForegroundColor DarkGray
-
-        # 3. Split the text into an array of lines to avoid cutting words in half
+        # 2. Chunking
         $lines = $RAW_CHAT -split "`n"
-        
-        # Prevent math errors on extremely short files
-        if ($lines.Count -lt 3) {
-            $chunkSize = $lines.Count
-            $chunks = @( ($lines -join "`n") )
-        } else {
+        if ($lines.Count -lt 3) { $chunks = @( ($lines -join "`n") ) } 
+        else {
             $chunkSize = [math]::Ceiling($lines.Count / 3)
             $chunks = @(
                 ($lines[0..($chunkSize-1)] -join "`n"),
@@ -154,55 +124,98 @@ while ($true) {
             )
         }
 
-        $FINAL_SUMMARY = ""
-        $chunkIndex = 1
-
-        # 4. Loop through each chunk and call Ollama
-        foreach ($chunk in $chunks) {
-            if ([string]::IsNullOrWhiteSpace($chunk)) { continue }
-
-            Write-Host "  -> Processing Chunk $chunkIndex/3..." -ForegroundColor DarkCyan
-
-            # The ultra-strict anti-truncation prompt, applied to just this chunk
-            $PROMPT = "You are a rigid enterprise data extraction pipeline. Extract all core modular facts from the following text block into distinct categories: Architectural Decisions, Variables, Methodology Updates, and Script Modifications. STRICT RULES: 1. Output strictly in plain text. 2. NO emojis, NO conversational filler, NO introductions, and NO conclusions. 3. EXHAUSTIVE EXTRACTION: Do NOT truncate lists or over-compress. You MUST capture the technical essence of EVERY single item. 4. Retain all specific kernel terminology, parameters, and bash commands verbatim. Provide only the raw, condensed technical data. Text chunk: $chunk"
-
-            $BODY = @{
-                model = $MODEL
-                prompt = $PROMPT
-                stream = $false
-            } | ConvertTo-Json -Depth 10 -Compress
-
-            $RESPONSE = Invoke-RestMethod -Uri "http://localhost:11434/api/generate" -Method Post -Body $BODY -ContentType "application/json; charset=utf-8"
-
-            $SUMMARY = $RESPONSE.response.Trim()
-
-            # THE AGGRESSIVE OUTPUT SCRUBBER (Belt and suspenders)
-            $SUMMARY = $SUMMARY -replace "`e\[[0-9;]*[a-zA-Z]", ""
-            $SUMMARY = $SUMMARY -replace "\x1b\[[0-9;]*[a-zA-Z]", ""
-            $SUMMARY = $SUMMARY -replace "\[[0-9;]*[a-zA-Z]", ""
-
-            # Append this chunk's extraction to the final master block
-            $FINAL_SUMMARY += "`n$SUMMARY`n"
-            $chunkIndex++
+       # -----------------------------------------------------------------
+        # NEW STAGE 1: NATIVE VARIABLE EXTRACTION (Bypass the LLM's Math)
+        # -----------------------------------------------------------------
+        Write-Host "[$TIMESTAMP]  STAGE 1: Extracting Variables via Regex..." -ForegroundColor DarkGray
+        
+        # This Regex perfectly captures any line containing a number followed by your exact units
+        $VAR_REGEX = '(?im)^.*(?:=|≈)\s*\d+(?:\.\d+)?\s*(?:µs|ms|s|%|GB/s|MB|bytes|lines/second|accesses).*$'
+        $NATIVE_VARS = [regex]::Matches($RAW_CHAT, $VAR_REGEX) | ForEach-Object { $_.Value.Trim() } | Select-Object -Unique
+        
+        $FORMATTED_VARS = "* VARIABLES:`n"
+        foreach ($var in $NATIVE_VARS) {
+            # Strip leading bullets/dashes from the raw text for clean formatting
+            $cleanVar = $var -replace "^[-\*\s]+", ""
+            $FORMATTED_VARS += "  - $cleanVar`n"
         }
 
-        Write-Host "[$TIMESTAMP]  Injecting into Graphify map..." -ForegroundColor Green
+        # -----------------------------------------------------------------
+        # STAGE 2: MAP-REDUCE FOR TOPOLOGY ONLY (Entities & Flows)
+        # -----------------------------------------------------------------
+        $lines = $RAW_CHAT -split "`n"
+        if ($lines.Count -lt 3) { $chunks = @( ($lines -join "`n") ) } 
+        else {
+            $chunkSize = [math]::Ceiling($lines.Count / 3)
+            $chunks = @(
+                ($lines[0..($chunkSize-1)] -join "`n"),
+                ($lines[$chunkSize..($chunkSize*2-1)] -join "`n"),
+                ($lines[($chunkSize*2)..($lines.Count-1)] -join "`n")
+            )
+        }
+
+        Write-Host "[$TIMESTAMP]  STAGE 2: LLM Extracting Entities and Flows..." -ForegroundColor DarkGray
+        $MAPPED_DATA = ""
         
+        foreach ($chunk in $chunks) {
+            if ([string]::IsNullOrWhiteSpace($chunk)) { continue }
+            $PROMPT_MAP = @"
+You are an architectural extraction engine. Extract ONLY the architectural entities and processes from the following text.
+DO NOT extract numerical variables. DO NOT perform any math. 
+--- TEXT TO EXTRACT ---
+$chunk
+"@
+            $BODY = @{ model=$MODEL; prompt=$PROMPT_MAP; stream=$false; options=@{ temperature=0.0; top_p=0.1 } } | ConvertTo-Json -Depth 10 -Compress
+            $RESPONSE = Invoke-RestMethod -Uri "http://localhost:11434/api/generate" -Method Post -Body $BODY -ContentType "application/json; charset=utf-8"
+            $MAPPED_DATA += "`n" + $RESPONSE.response.Trim()
+        }
+
+       Write-Host "[$TIMESTAMP]  STAGE 3: REDUCE (Formatting Graph)..." -ForegroundColor Magenta
+
+        $PROMPT_REDUCE = @"
+You are a Graph Topology Formatter. Merge these notes into a single topological map.
+STRICT RULES:
+1. Use EXACTLY these two headings: * ENTITIES: and * FLOWS:
+2. DO NOT output a * VARIABLES: section.
+3. FLOW FORMAT: [Entity A] -> [Action] -> [Entity B]
+--- NOTES ---
+$MAPPED_DATA
+"@
+        $BODY = @{ model=$MODEL; prompt=$PROMPT_REDUCE; stream=$false; options=@{ temperature=0.0; repeat_penalty=1.2 } } | ConvertTo-Json -Depth 10 -Compress
+        $RESPONSE = Invoke-RestMethod -Uri "http://localhost:11434/api/generate" -Method Post -Body $BODY -ContentType "application/json; charset=utf-8"
+        $LLM_SUMMARY = $RESPONSE.response.Trim() -replace "`e\[[0-9;]*[a-zA-Z]", "" -replace "\x1b\[[0-9;]*[a-zA-Z]", ""
+
+        # ---------------------------------------------------------
+        # THE GUILLOTINE: Force LLM compliance by chopping off its variables
+        # ---------------------------------------------------------
+        if ($LLM_SUMMARY -match "\* VARIABLES:") {
+            $LLM_SUMMARY = ($LLM_SUMMARY -split "\* VARIABLES:")[0].Trim()
+        }
+
+        # Clean the Regex variables (Remove accidental 'fio' bash script captures)
+        $CLEAN_VARS = "* VARIABLES:`n"
+        foreach ($var in $NATIVE_VARS) {
+            $cleanVar = $var -replace "^[-\*\s]+", ""
+            # Ignore lines from the fio block or orphaned equals signs
+            if ($cleanVar -notmatch "(direct=|sync=|bs=|iodepth=|^=\s*[\d\.]+$)") {
+                $CLEAN_VARS += "  - $cleanVar`n"
+            }
+        }
+
+        # Combine LLM Topology with PowerShell's flawless Math extraction
+        $FINAL_SUMMARY = "$LLM_SUMMARY`n`n$CLEAN_VARS"
+
+        Write-Host "[$TIMESTAMP]  Injecting into Graphify map..." -ForegroundColor Green
         $INJECT_TIME = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
         $HEADER = "`n`n## [LOCAL COMPACTION UPDATE - $INJECT_TIME]`n"
         
-        # 5. Append to the Graphify map
-        Add-Content -Path $GRAPH_FILE -Value $HEADER
-        Add-Content -Path $GRAPH_FILE -Value $FINAL_SUMMARY
-
-        # 6. Delete the file to advance the queue
+        Add-Content -Path $GRAPH_FILE -Value $HEADER -Encoding UTF8
+        Add-Content -Path $GRAPH_FILE -Value $FINAL_SUMMARY -Encoding UTF8
         Remove-Item -Path $FULL_PATH -Force
         
-        Write-Host "[$TIMESTAMP]  Deleted $($TARGET_FILE.Name). Waiting for next export..." -ForegroundColor Red
+        Write-Host "[$TIMESTAMP]  Deleted $($TARGET_FILE.Name). Waiting..." -ForegroundColor Red
         Write-Host "----------------------------------------------------------"
     }
-
-    # 7. Rest loop to prevent CPU thrashing
     Start-Sleep -Seconds $POLL_INTERVAL
 }
 ```
