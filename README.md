@@ -84,8 +84,8 @@ Create a file named auto_compact_daemon.ps1 in your project root and paste the f
 ```PowerShell
 # auto_compact_daemon.ps1 - $0.00 Automated Background RAG Poller (Windows)
 
-$WATCH_DIR = "export_queue"
-$GRAPH_FILE = "project_context.md" # Change this to your master context file
+$WATCH_DIR = "eq"
+$GRAPH_FILE = "graphify-out\GRAPH_REPORT.md"
 $MODEL = "qwen2.5-coder:7b"
 $POLL_INTERVAL = 5
 
@@ -95,7 +95,7 @@ if (-not (Test-Path -Path $WATCH_DIR)) {
 }
 
 if (-not (Test-Path -Path $GRAPH_FILE)) {
-    Write-Host "Error: $GRAPH_FILE not found. Please create your master context markdown file first." -ForegroundColor Red
+    Write-Host "Error: $GRAPH_FILE not found. Please run this from your CMP-400 root directory." -ForegroundColor Red
     exit
 }
 
@@ -103,52 +103,66 @@ Write-Host "==========================================================" -Foregro
 Write-Host "  Auto-Compaction Daemon Active (Windows)" -ForegroundColor Cyan
 Write-Host "  Watching directory : .\$WATCH_DIR\" -ForegroundColor Cyan
 Write-Host "  Using Local Model  : $MODEL" -ForegroundColor Cyan
-Write-Host "   Polling Interval   : $POLL_INTERVAL seconds" -ForegroundColor Cyan
+Write-Host "  Polling Interval   : $POLL_INTERVAL seconds" -ForegroundColor Cyan
 Write-Host "==========================================================" -ForegroundColor Cyan
-Write-Host "Usage in Claude Code: /export export_queue\chat1.md`n" -ForegroundColor Yellow
+Write-Host "Usage in Claude Code: /export $WATCH_DIR\chat1.md`n" -ForegroundColor Yellow
 
 while ($true) {
     # 2. Find the oldest file in the queue (FIFO - First In, First Out)
     $TARGET_FILE = Get-ChildItem -Path $WATCH_DIR -File | Sort-Object CreationTime | Select-Object -First 1
 
-    if ($null -ne $TARGET_FILE) {
+    if ($TARGET_FILE) {
         $FULL_PATH = $TARGET_FILE.FullName
         $TIMESTAMP = Get-Date -Format "HH:mm:ss"
         
-        Write-Host "[$TIMESTAMP]  Picked up: $($TARGET_FILE.Name) from the queue." -ForegroundColor Yellow
+        Write-Host "[$TIMESTAMP]  Picked up: $($TARGET_FILE.Name) from the top of the pile." -ForegroundColor Yellow
         
-        $RAW_CHAT = Get-Content -Path $FULL_PATH -Raw
+      $RAW_CHAT = Get-Content -Path $FULL_PATH -Raw
         
-        # Adjust this prompt to fit your specific workflow
-        $PROMPT = "You are a strict technical summarizer. Extract the core architectural decisions, variables, script modifications, and methodology from this chat transcript. Write a dense, highly technical markdown summary. Do NOT output conversational filler. Output ONLY the raw markdown summary. Here is the chat: $RAW_CHAT"
+        #  1. THE "TIME MACHINE" (Fixes the overlapping/duplicated words)
+        $evaluator = [System.Text.RegularExpressions.MatchEvaluator] {
+            param($m)
+            $text = $m.Groups[1].Value
+            $del = [int]$m.Groups[2].Value
+            if ($text.Length -ge $del) { 
+                return $text.Substring(0, $text.Length - $del) 
+            }
+            return ""
+        }
+        $RAW_CHAT = [System.Text.RegularExpressions.Regex]::Replace($RAW_CHAT, "(?s)(.*?)\x1b\[(\d+)D\x1b\[K\r?\n?", $evaluator)
+
+        # 2. THE ASCII ENFORCER (Prevents JSON crashes)
+        # This instantly deletes all emojis, weird terminal bytes, and the  characters.
+        # It ONLY allows standard keyboard letters, numbers, spaces, and newlines.
+        $RAW_CHAT = $RAW_CHAT -replace '[^\x09\x0A\x0D\x20-\x7E]', ''
+
+        $PROMPT = "You are a data extraction pipeline. Condense the following chat transcript into core modular facts: architectural decisions, new variables, methodology updates, and script modifications. STRICT RULES: Output strictly in plain text. Do not use emojis. Do not include conversational filler, introductions, or conclusions. Provide only the condensed, raw technical data. Chat transcript: $RAW_CHAT"
 
         Write-Host "[$TIMESTAMP]  Condensing with local Ollama API..." -ForegroundColor DarkGray
 
+        # 3. Compress the JSON and force UTF-8 charset
         $BODY = @{
             model = $MODEL
             prompt = $PROMPT
             stream = $false
-        } | ConvertTo-Json
-        
-        $RESPONSE = Invoke-RestMethod -Uri "http://localhost:11434/api/generate" -Method Post -Body $BODY -ContentType "application/json"
+        } | ConvertTo-Json -Depth 10 -Compress
+
+        $RESPONSE = Invoke-RestMethod -Uri "http://localhost:11434/api/generate" -Method Post -Body $BODY -ContentType "application/json; charset=utf-8"
+
         $SUMMARY = $RESPONSE.response.Trim()
-        
+
+        # THE AGGRESSIVE OUTPUT SCRUBBER (Belt and suspenders, just in case)
+        $SUMMARY = $SUMMARY -replace "`e\[[0-9;]*[a-zA-Z]", ""
+        $SUMMARY = $SUMMARY -replace "\x1b\[[0-9;]*[a-zA-Z]", ""
+        $SUMMARY = $SUMMARY -replace "\[[0-9;]*[a-zA-Z]", ""
+
         Write-Host "[$TIMESTAMP]  Injecting into Graphify map..." -ForegroundColor Green
         
-        # 3. Call Ollama via PIPELINE to bypass Windows command-line length limits
-        $SUMMARY = $PROMPT | ollama run $MODEL $PROMPT
-
-        $SUMMARY = $SUMMARY -replace "`e\[[0-9;]*[a-zA-Z]", ""
-
-        Write-Host "[$TIMESTAMP]  Injecting into context map..." -ForegroundColor Green
-        
         $INJECT_TIME = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-        $HEADER = "## [LOCAL COMPACTION UPDATE - $INJECT_TIME]"
+        $HEADER = "`n`n## [LOCAL COMPACTION UPDATE - $INJECT_TIME]`n"
         
-        # 4. Append to the context map cleanly
-        Add-Content -Path $GRAPH_FILE -Value ""
+        # 4. Append to the Graphify map
         Add-Content -Path $GRAPH_FILE -Value $HEADER
-        Add-Content -Path $GRAPH_FILE -Value ""
         Add-Content -Path $GRAPH_FILE -Value $SUMMARY
 
         # 5. Delete the file to advance the queue
