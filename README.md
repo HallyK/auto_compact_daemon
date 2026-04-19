@@ -125,7 +125,9 @@ while ($true) {
         Write-Host "[$TIMESTAMP] ⚙️ Condensing with local Ollama model..." -ForegroundColor DarkGray
         
         # 3. Call Ollama via PIPELINE to bypass Windows command-line length limits
-        $SUMMARY = $PROMPT | ollama run $MODEL
+        $SUMMARY = $PROMPT | ollama run $MODEL $PROMPT
+
+        $SUMMARY = $SUMMARY -replace "`e\[[0-9;]*[a-zA-Z]", ""
 
         Write-Host "[$TIMESTAMP] 💉 Injecting into context map..." -ForegroundColor Green
         
