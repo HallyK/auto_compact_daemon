@@ -1,3 +1,6 @@
+<img width="926" height="120" alt="image" src="https://github.com/user-attachments/assets/77c6d816-0ff8-44e8-b300-5743ff21a637" /><img width="921" height="219" alt="image" src="https://github.com/user-attachments/assets/db073ce4-2911-4c75-b87b-c4fb3fe98aec" />
+
+
 # auto_compact_daemon
 When using graphify using compact costs large amounts of tokens based on the length of the conversation. This is a backdoor fix to the compact issue, instead of using claude to write the compact to graphiffy, this daemon uses Ollama on your local GPU to summarize the exact same text, but for free. Offloading the text in a .md file.
 
