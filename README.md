@@ -90,6 +90,7 @@ $MODEL = "qwen2.5-coder:7b"
 $POLL_INTERVAL = 5
 
 if (-not (Test-Path -Path $WATCH_DIR)) { New-Item -ItemType Directory -Path $WATCH_DIR | Out-Null }
+if (-not (Test-Path -Path (Split-Path $GRAPH_FILE))) { New-Item -ItemType Directory -Path (Split-Path $GRAPH_FILE) -Force | Out-Null }
 
 Write-Host "==========================================================" -ForegroundColor Cyan
 Write-Host "  Auto-Compaction Daemon Active (Two-Stage Map-Reduce)" -ForegroundColor Cyan
@@ -112,7 +113,7 @@ while ($true) {
         $RAW_CHAT = [System.Text.RegularExpressions.Regex]::Replace($RAW_CHAT, "(?s)(.*?)\x1b\[(\d+)D\x1b\[K\r?\n?", $evaluator)
         $RAW_CHAT = $RAW_CHAT -replace "\x1B\[[0-9;]*[a-zA-Z]", ""
 
-        # 2. Chunking
+        # 2. Chunking (Consolidated)
         $lines = $RAW_CHAT -split "`n"
         if ($lines.Count -lt 3) { $chunks = @( ($lines -join "`n") ) } 
         else {
@@ -124,8 +125,8 @@ while ($true) {
             )
         }
 
-       # -----------------------------------------------------------------
-        # NEW STAGE 1: NATIVE VARIABLE EXTRACTION (Bypass the LLM's Math)
+        # -----------------------------------------------------------------
+        # STAGE 1: NATIVE VARIABLE EXTRACTION (Bypass the LLM's Math)
         # -----------------------------------------------------------------
         Write-Host "[$TIMESTAMP]  STAGE 1: Extracting Variables via Regex..." -ForegroundColor DarkGray
         
@@ -143,44 +144,40 @@ while ($true) {
         # -----------------------------------------------------------------
         # STAGE 2: MAP-REDUCE FOR TOPOLOGY ONLY (Entities & Flows)
         # -----------------------------------------------------------------
-        $lines = $RAW_CHAT -split "`n"
-        if ($lines.Count -lt 3) { $chunks = @( ($lines -join "`n") ) } 
-        else {
-            $chunkSize = [math]::Ceiling($lines.Count / 3)
-            $chunks = @(
-                ($lines[0..($chunkSize-1)] -join "`n"),
-                ($lines[$chunkSize..($chunkSize*2-1)] -join "`n"),
-                ($lines[($chunkSize*2)..($lines.Count-1)] -join "`n")
-            )
-        }
-
         Write-Host "[$TIMESTAMP]  STAGE 2: LLM Extracting Entities and Flows..." -ForegroundColor DarkGray
         $MAPPED_DATA = ""
         
         foreach ($chunk in $chunks) {
             if ([string]::IsNullOrWhiteSpace($chunk)) { continue }
+            
             $PROMPT_MAP = @"
-You are an architectural extraction engine. Extract ONLY the architectural entities and processes from the following text.
-DO NOT extract numerical variables. DO NOT perform any math. 
+
 --- TEXT TO EXTRACT ---
 $chunk
 "@
-            $BODY = @{ model=$MODEL; prompt=$PROMPT_MAP; stream=$false; options=@{ temperature=0.0; top_p=0.1 } } | ConvertTo-Json -Depth 10 -Compress
-            $RESPONSE = Invoke-RestMethod -Uri "http://localhost:11434/api/generate" -Method Post -Body $BODY -ContentType "application/json; charset=utf-8"
-            $MAPPED_DATA += "`n" + $RESPONSE.response.Trim()
+            # Send to Ollama
+            $BODY_MAP = @{ model=$MODEL; prompt=$PROMPT_MAP; stream=$false; options=@{ temperature=0.0 } } | ConvertTo-Json -Depth 10 -Compress
+            $RESPONSE_MAP = Invoke-RestMethod -Uri "http://localhost:11434/api/generate" -Method Post -Body $BODY_MAP -ContentType "application/json; charset=utf-8"
+            
+            $MAPPED_DATA += $RESPONSE_MAP.response.Trim() + "`n`n"
         }
 
-       Write-Host "[$TIMESTAMP]  STAGE 3: REDUCE (Formatting Graph)..." -ForegroundColor Magenta
+        # -----------------------------------------------------------------
+        # STAGE 3: REDUCE (Formatting Graph)
+        # -----------------------------------------------------------------
+        Write-Host "[$TIMESTAMP]  STAGE 3: REDUCE (Formatting Graph)..." -ForegroundColor Magenta
+
+        # Pull the last ~2000 characters of the graph file for read-only context
+        $GRAPH_CONTEXT = ""
+        if (Test-Path $GRAPH_FILE) {
+            $RAW_GRAPH = Get-Content $GRAPH_FILE -Raw
+            if ($RAW_GRAPH.Length -gt 2000) { $GRAPH_CONTEXT = $RAW_GRAPH.Substring($RAW_GRAPH.Length - 2000) }
+            else { $GRAPH_CONTEXT = $RAW_GRAPH }
+        }
 
         $PROMPT_REDUCE = @"
-You are a Graph Topology Formatter. Merge these notes into a single topological map.
-STRICT RULES:
-1. Use EXACTLY these two headings: * ENTITIES: and * FLOWS:
-2. DO NOT output a * VARIABLES: section.
-3. FLOW FORMAT: [Entity A] -> [Action] -> [Entity B]
---- NOTES ---
-$MAPPED_DATA
 "@
+        
         $BODY = @{ model=$MODEL; prompt=$PROMPT_REDUCE; stream=$false; options=@{ temperature=0.0; repeat_penalty=1.2 } } | ConvertTo-Json -Depth 10 -Compress
         $RESPONSE = Invoke-RestMethod -Uri "http://localhost:11434/api/generate" -Method Post -Body $BODY -ContentType "application/json; charset=utf-8"
         $LLM_SUMMARY = $RESPONSE.response.Trim() -replace "`e\[[0-9;]*[a-zA-Z]", "" -replace "\x1b\[[0-9;]*[a-zA-Z]", ""
